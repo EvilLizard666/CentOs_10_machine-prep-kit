@@ -13,7 +13,7 @@ report_msg() { echo "- $1" >> "$REPORT_FILE"; }
 # 1. Usage and Argument Check
 if [ "$#" -ne 3 ]; then
     echo "Usage: sudo $0 <ports_to_expose> <username> <password>"
-    echo "Example: sudo $0 22,9418 developer W3lcome2archive"
+    echo "Example: sudo $0 22,9418 developer Password123"
     exit 1
 fi
 
