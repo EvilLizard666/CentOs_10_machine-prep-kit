@@ -1,18 +1,17 @@
 #!/bin/bash
 
-# --- Configuration & Logging ---
+# --- Hardcoded Configuration ---
+TARGET_DOMAIN="htb"
 LOG_FILE="/var/log/system_init.log"
 REPORT_FILE="/tmp/setup_report.txt"
-TARGET_DOMAIN="archiver.htb"
 
-# --- Initialization ---
 log_msg() { echo -e "$1" | tee -a "$LOG_FILE"; }
 report_msg() { echo "- $1" >> "$REPORT_FILE"; }
 
-# 1. Usage and Argument Check
+# 1. Usage and Argument Check (4 Arguments)
 if [ "$#" -ne 4 ]; then
     echo "Usage: sudo $0 <hostname> <ports_to_expose> <username> <password>"
-    echo "Example: sudo $0 archiver 22,9418 developer W3lcome2archive"
+    echo "Example: sudo $0 zozo 80,443 developer P@ssword123"
     exit 1
 fi
 
@@ -28,90 +27,64 @@ fi
 
 echo "--- System Initialization Log: $(date) ---" > "$LOG_FILE"
 echo "CentOS 10 Provisioning Report" > "$REPORT_FILE"
-echo "------------------------------------" >> "$REPORT_FILE"
 
-log_msg "[*] Starting Universal CentOS 10 Provisioning..."
+log_msg "[*] Starting HTB CentOS 10 Provisioning..."
 
 # 2. Hostname & Networking
-if [ "$(hostname)" != "$TARGET_HOSTNAME" ]; then
-    hostnamectl set-hostname "$TARGET_HOSTNAME"
-    log_msg "[+] Hostname set to '$TARGET_HOSTNAME'"
-    report_msg "Hostname: $TARGET_HOSTNAME"
-else
-    log_msg "[✓] Hostname already correct ($TARGET_HOSTNAME)"
+hostnamectl set-hostname "$TARGET_HOSTNAME"
+log_msg "[+] Hostname set to '$TARGET_HOSTNAME'"
+
+# Automatically maps to .htb (e.g., zozo.htb)
+if ! grep -q "$TARGET_HOSTNAME.$TARGET_DOMAIN" /etc/hosts; then
+    echo "127.0.1.1   $TARGET_HOSTNAME.$TARGET_DOMAIN $TARGET_HOSTNAME" >> /etc/hosts
+    log_msg "[+] Hosts file updated for $TARGET_HOSTNAME.$TARGET_DOMAIN"
 fi
 
-if ! grep -q "$TARGET_HOSTNAME" /etc/hosts; then
-    echo "127.0.1.1   $TARGET_HOSTNAME.htb $TARGET_HOSTNAME" >> /etc/hosts
-    log_msg "[+] Hosts file updated with $TARGET_HOSTNAME"
-fi
+# 3. Updates & Essential Tools
+log_msg "[*] Updating system and installing net-tools..."
+dnf update -y >> "$LOG_FILE" 2>&1
+dnf install -y net-tools >> "$LOG_FILE" 2>&1
 
-# 3. Package Management & Updates
-log_msg "[*] Checking for updates..."
-dnf check-update -q
-if [ $? -eq 100 ]; then
-    log_msg "[+] Installing system updates..."
-    dnf update -y >> "$LOG_FILE" 2>&1
-    report_msg "Updates: System fully patched"
-else
-    log_msg "[✓] System is already up to date"
-fi
+# 4. Localization (HTB Requirement)
+localectl set-locale LANG=en_US.UTF-8
+report_msg "Locale: en_US.UTF-8 enforced"
 
-# 4. Essential Tools (net-tools for ifconfig)
-if ! command -v ifconfig >/dev/null 2>&1; then
-    log_msg "[+] Installing net-tools..."
-    dnf install -y net-tools >> "$LOG_FILE" 2>&1
-    report_msg "Tools: net-tools (ifconfig) installed"
-fi
-
-# 5. Localization (HTB Requirement)
-if [[ $(localectl status) != *"LANG=en_US.UTF-8"* ]]; then
-    localectl set-locale LANG=en_US.UTF-8
-    log_msg "[+] Locale set to en_US.UTF-8"
-fi
-
-# 6. User Creation
+# 5. User Creation
 if ! id "$NEW_USER" &>/dev/null; then
     useradd -m -s /bin/bash "$NEW_USER"
     echo "$NEW_USER:$USER_PASS" | chpasswd
     log_msg "[+] User '$NEW_USER' created"
-    report_msg "User: $NEW_USER created"
-else
-    echo "$NEW_USER:$USER_PASS" | chpasswd
-    log_msg "[✓] User '$NEW_USER' already exists; password updated"
 fi
 
-# 7. History Lockdown
+# 6. History Lockdown (The "Invisible Build" Rule)
 if ! grep -q 'HISTFILE=/dev/null' /etc/profile; then
-    {
-        echo 'HISTFILE=/dev/null'
-        echo 'HISTSIZE=0'
-        echo 'export HISTFILE HISTSIZE'
+    { 
+      echo 'HISTFILE=/dev/null'
+      echo 'HISTSIZE=0'
+      echo 'export HISTFILE HISTSIZE'
     } >> /etc/profile
-    log_msg "[+] History suppression added to /etc/profile"
 fi
 
+# Apply history suppression for root and the new user
 for target_dir in "/root" "/home/$NEW_USER"; do
     for f in ".bash_history" ".viminfo" ".mysql_history"; do
-        target_file="$target_dir/$f"
-        if [ ! -L "$target_file" ] || [ "$(readlink "$target_file")" != "/dev/null" ]; then
-            ln -sf /dev/null "$target_file"
-            chown root:root "$target_file"
-            log_msg "[+] $target_file linked to /dev/null"
-        fi
+        ln -sf /dev/null "$target_dir/$f"
+        chown root:root "$target_dir/$f"
     done
 done
-report_msg "Security: History files made immutable"
+report_msg "Security: History files suppressed for root and $NEW_USER"
 
-# 8. Firewall Configuration
+# 7. Selective Firewall
 log_msg "[*] Configuring firewall for ports: $USER_PORTS"
 systemctl unmask firewalld >/dev/null 2>&1
 systemctl enable --now firewalld >> "$LOG_FILE" 2>&1
 
+# Remove default RHEL services
 for svc in $(firewall-cmd --permanent --list-services); do
     firewall-cmd --permanent --remove-service="$svc" >/dev/null 2>&1
 done
 
+# Open specified TCP ports
 IFS=',' read -ra ADDR <<< "$USER_PORTS"
 for port in "${ADDR[@]}"; do
     clean_port=$(echo $port | xargs)
@@ -122,15 +95,14 @@ for port in "${ADDR[@]}"; do
 done
 
 firewall-cmd --reload >/dev/null 2>&1
-report_msg "Firewall: Running. Ports allowed: $USER_PORTS"
+report_msg "Firewall: Allowed ports: $USER_PORTS"
 
-# --- Output Summary & Reboot ---
+# --- Complete ---
 echo -e "\n--- SETUP COMPLETE ---"
-cat "$REPORT_FILE"
-log_msg "[✅] Basic configuration finished. Detailed logs: $LOG_FILE"
+echo "Identity: $TARGET_HOSTNAME.$TARGET_DOMAIN"
+echo "User: $NEW_USER"
+log_msg "[✅] Configuration finished."
 
-echo "------------------------------------------------"
-echo "The system will reboot in 10 seconds..."
-for i in {10..1}; do echo -n "$i... "; sleep 1; done
-echo -e "\n[!] Rebooting now."
+echo "Rebooting in 10 seconds..."
+sleep 10
 reboot
