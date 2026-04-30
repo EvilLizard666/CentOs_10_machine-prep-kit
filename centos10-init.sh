@@ -26,9 +26,9 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo "--- System Initialization Log: $(date) ---" > "$LOG_FILE"
-echo "CentOS 10 Provisioning Report" > "$REPORT_FILE"
+echo "CentOS Provisioning Report" > "$REPORT_FILE"
 
-log_msg "[*] Starting HTB CentOS 10 Provisioning..."
+log_msg "[*] Starting HTB Provisioning..."
 
 # 2. Hostname & Networking
 hostnamectl set-hostname "$TARGET_HOSTNAME"
@@ -40,23 +40,39 @@ if ! grep -q "$TARGET_HOSTNAME.$TARGET_DOMAIN" /etc/hosts; then
     log_msg "[+] Hosts file updated for $TARGET_HOSTNAME.$TARGET_DOMAIN"
 fi
 
-# 3. Updates & Essential Tools
-log_msg "[*] Updating system and installing net-tools..."
+# 3. Essential Tools (wget, Python3, OpenSSH)
+log_msg "[*] Updating system and installing essential tools..."
 dnf update -y >> "$LOG_FILE" 2>&1
-dnf install -y net-tools >> "$LOG_FILE" 2>&1
+# Install core utilities, wget, and python3
+dnf install -y dnf-plugins-core net-tools wget python3 python3-pip openssh-server >> "$LOG_FILE" 2>&1
+report_msg "Packages: wget, python3, pip, and net-tools installed"
 
-# 4. Localization (HTB Requirement)
+# 4. Docker & Docker Compose Setup
+log_msg "[*] Setting up Docker repository and installing Docker Compose..."
+# Add official Docker repository
+dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo >> "$LOG_FILE" 2>&1
+# Install Docker Engine and the Compose plugin
+dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >> "$LOG_FILE" 2>&1
+# Enable and start Docker service
+systemctl enable --now docker >> "$LOG_FILE" 2>&1
+# Create a symlink so the classic 'docker-compose' command works
+ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+report_msg "Packages: Docker and Docker Compose installed and enabled"
+
+# 5. Localization (HTB Requirement)
 localectl set-locale LANG=en_US.UTF-8
 report_msg "Locale: en_US.UTF-8 enforced"
 
-# 5. User Creation
+# 6. User Creation
 if ! id "$NEW_USER" &>/dev/null; then
     useradd -m -s /bin/bash "$NEW_USER"
     echo "$NEW_USER:$USER_PASS" | chpasswd
-    log_msg "[+] User '$NEW_USER' created"
+    # Optional: Add user to docker group so they can run containers without sudo
+    usermod -aG docker "$NEW_USER"
+    log_msg "[+] User '$NEW_USER' created and added to docker group"
 fi
 
-# 6. History Lockdown (The "Invisible Build" Rule)
+# 7. History Lockdown (The "Invisible Build" Rule)
 if ! grep -q 'HISTFILE=/dev/null' /etc/profile; then
     { 
       echo 'HISTFILE=/dev/null'
@@ -74,7 +90,7 @@ for target_dir in "/root" "/home/$NEW_USER"; do
 done
 report_msg "Security: History files suppressed for root and $NEW_USER"
 
-# 7. Selective Firewall
+# 8. Selective Firewall
 log_msg "[*] Configuring firewall for ports: $USER_PORTS"
 systemctl unmask firewalld >/dev/null 2>&1
 systemctl enable --now firewalld >> "$LOG_FILE" 2>&1
@@ -87,21 +103,28 @@ done
 # Open specified TCP ports
 IFS=',' read -ra ADDR <<< "$USER_PORTS"
 for port in "${ADDR[@]}"; do
-    clean_port=$(echo $port | xargs)
+    clean_port=$(echo "$port" | xargs)
     if [[ $clean_port =~ ^[0-9]+$ ]]; then
         firewall-cmd --permanent --add-port="${clean_port}/tcp" >/dev/null 2>&1
         log_msg "[+] Port ${clean_port}/tcp opened"
     fi
 done
 
+# 9. SSH Configuration & Persistence
+log_msg "[*] Enabling SSH service on boot..."
+systemctl enable --now sshd >> "$LOG_FILE" 2>&1
+# Hardcode SSH into the firewall so you don't lock yourself out
+firewall-cmd --permanent --add-service=ssh >/dev/null 2>&1
+
 firewall-cmd --reload >/dev/null 2>&1
-report_msg "Firewall: Allowed ports: $USER_PORTS"
+report_msg "Firewall: Allowed ports: $USER_PORTS, plus SSH"
+report_msg "Service: SSH enabled and started on boot"
 
 # --- Complete ---
 echo -e "\n--- SETUP COMPLETE ---"
 echo "Identity: $TARGET_HOSTNAME.$TARGET_DOMAIN"
-echo "User: $NEW_USER"
-log_msg "[✅] Configuration finished."
+echo "User: $NEW_USER (Added to Docker group)"
+log_msg "[+] Configuration finished."
 
 echo "Rebooting in 10 seconds..."
 sleep 10
